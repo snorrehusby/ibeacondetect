@@ -4,6 +4,7 @@ import com.radiusnetworks.ibeacon.IBeaconConsumer;
 import com.radiusnetworks.ibeacon.IBeaconManager;
 import com.radiusnetworks.ibeacon.MonitorNotifier;
 import com.radiusnetworks.ibeacon.Region;
+import com.radiusnetworks.ibeacon.TimedBeaconSimulator;
 
 import android.os.Bundle;
 import android.os.RemoteException;
@@ -18,18 +19,22 @@ import android.widget.EditText;
 /**
  * 
  * @author dyoung
- *
+ * @author Matt Tyler
  */
 public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	protected static final String TAG = "MonitoringActivity";
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
-		Log.d(TAG, "oncreate");
+		Log.d(TAG, "onCreate");
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_monitoring);
 		verifyBluetooth();
 	    iBeaconManager.bind(this);			
+	    
+		//initializing simulated iBeacons
+		//IBeaconManager.setBeaconSimulator(new TimedBeaconSimulator() );
+		//((TimedBeaconSimulator) IBeaconManager.getBeaconSimulator()).createTimedSimulatedBeacons();
 	}
 	
 	public void onRangingClicked(View view) {
@@ -111,12 +116,12 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
         iBeaconManager.setMonitorNotifier(new MonitorNotifier() {
         @Override
         public void didEnterRegion(Region region) {
-          logToDisplay("I just saw an iBeacon for the first time!");       
+          logToDisplay("I just saw an iBeacon named "+ region.getUniqueId() +" for the first time!" );       
         }
 
         @Override
         public void didExitRegion(Region region) {
-        	logToDisplay("I no longer see an iBeacon");
+        	logToDisplay("I no longer see an iBeacon named "+ region.getUniqueId());
         }
 
         @Override
@@ -128,7 +133,13 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
         });
 
         try {
-            iBeaconManager.startMonitoringBeaconsInRegion(new Region("myMonitoringUniqueId", null, null, null));
+        	iBeaconManager.startMonitoringBeaconsInRegion(new Region("myMonitoringUniqueId", null, null, null));
+        	
+        	//Sample Simulated iBeacons
+        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test1","DF7E1C79-43E9-44FF-886F-1D1F7DA6997A".toLowerCase(), 1, 1));
+        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test2","DF7E1C79-43E9-44FF-886F-1D1F7DA6997B".toLowerCase(), 1, 2));
+        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test3","DF7E1C79-43E9-44FF-886F-1D1F7DA6997C".toLowerCase(), 1, 3));
+        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test4","DF7E1C79-43E9-44FF-886F-1D1F7DA6997D".toLowerCase(), 1, 4));
         } catch (RemoteException e) {   }
     }
 	
