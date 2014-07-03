@@ -1,15 +1,26 @@
 package com.radiusnetworks.ibeaconreference;
 
+import org.eclipse.paho.android.service.MqttAndroidClient;
+import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
+import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.MqttSecurityException;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
+//import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+
+//import com.jessefarebro.mqtt.MqttService;
 import com.radiusnetworks.ibeacon.IBeaconConsumer;
 import com.radiusnetworks.ibeacon.IBeaconManager;
 import com.radiusnetworks.ibeacon.MonitorNotifier;
 import com.radiusnetworks.ibeacon.Region;
-import com.radiusnetworks.ibeacon.TimedBeaconSimulator;
+//import com.radiusnetworks.ibeacon.TimedBeaconSimulator;
 
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.util.Log;
@@ -23,6 +34,15 @@ import android.widget.EditText;
  */
 public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	protected static final String TAG = "MonitoringActivity";
+	
+//	String serverUri = "tcp://messaging.quickstart.internetofthings.ibmcloud.com";
+	String serverUri = "tcp://dev.rabbitmq.com";
+	String clientId = "quickstart:fbb80f053444";
+//	MemoryPersistence persistence = new MemoryPersistence();
+//	String topic = "iot-1/d/fbb80f053444/evt/iotsensor/json";
+	String topic = "test/helloworld";
+	MqttAndroidClient androidClient;
+	
 
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
@@ -30,7 +50,19 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 		super.onCreate(savedInstanceState);
 		setContentView(R.layout.activity_monitoring);
 		verifyBluetooth();
-	    iBeaconManager.bind(this);			
+	    iBeaconManager.bind(this);
+	    try {
+	    	MqttConnectOptions conOpt = new MqttConnectOptions();
+	    	conOpt.setKeepAliveInterval(3000);
+	    	Context context = this;
+	    	androidClient = new MqttAndroidClient(context, serverUri, clientId);
+//			conOpt.setWill(client.getTopic(topic),"Crash".getBytes(),1,true);
+	    	androidClient.connect(conOpt);
+	    	Log.v("onCreate", "We might have logged on with the Mqtt client!");
+		} catch (MqttException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	    
 		//initializing simulated iBeacons
 		//IBeaconManager.setBeaconSimulator(new TimedBeaconSimulator() );
@@ -85,11 +117,51 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	}	
 
     private IBeaconManager iBeaconManager = IBeaconManager.getInstanceForApplication(this);
+    
+    public void sendSignal(Region region){
+    	try 
+    	{
+    		//first things first
+    		if (region.getMajor()==null || region.getMinor()==null || region.getProximityUuid()==null)
+    		{}
+    		else{
+				//get stuff
+				String myMajor = region.getMajor().toString();
+				String myMinor = region.getMinor().toString();
+				String myUuid = region.getProximityUuid();
+				String rawMessage = "Discovered iBeacon: " + myUuid + "#" + myMajor + "#" + myMinor;
+				//connect
+				//parse message
+				Log.v("sendSignal","Created raw message: " + rawMessage);
+				MqttMessage message = new MqttMessage();
+				message.setQos(0);
+				message.setRetained(false);
+				message.setPayload(rawMessage.getBytes());
+				Log.v("sendSignal","Attempting to publish message to broker");
+				androidClient.publish(topic, message);
+				Log.v("sendSignal","Message (hopefully) published to broker");
+    		} 
+		}
+    	catch (MqttSecurityException e) {
+		// TODO Auto-generated catch block
+    		e.printStackTrace();
+    	} 
+    	catch (MqttException e) {
+		// TODO Auto-generated catch block
+    		e.printStackTrace();
+		}
+	}
 
     @Override 
     protected void onDestroy() {
         super.onDestroy();
         iBeaconManager.unBind(this);
+        try {
+        	androidClient.disconnect();
+		} catch (MqttException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
     }
     @Override 
     protected void onPause() {
@@ -116,7 +188,11 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
         iBeaconManager.setMonitorNotifier(new MonitorNotifier() {
         @Override
         public void didEnterRegion(Region region) {
-          logToDisplay("I just saw an iBeacon named "+ region.getUniqueId() +" for the first time!" );       
+          logToDisplay("I just saw an iBeacon named "+ region.getUniqueId() +" for the first time!" );
+          //my added stuff
+          logToDisplay("Sending MQTT message...");
+          sendSignal(region);
+          logToDisplay("MQTT message sent!");
         }
 
         @Override
@@ -133,8 +209,7 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
         });
 
         try {
-        	iBeaconManager.startMonitoringBeaconsInRegion(new Region("myMonitoringUniqueId", null, null, null));
-        	
+        	iBeaconManager.startMonitoringBeaconsInRegion(new Region("Utgang", "e2c56db5-dffb-48d2-b060-d0f5a71096e0", 3, 1));
         	//Sample Simulated iBeacons
         	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test1","DF7E1C79-43E9-44FF-886F-1D1F7DA6997A".toLowerCase(), 1, 1));
         	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test2","DF7E1C79-43E9-44FF-886F-1D1F7DA6997B".toLowerCase(), 1, 2));
