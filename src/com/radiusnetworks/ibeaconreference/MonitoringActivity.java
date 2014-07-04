@@ -35,15 +35,13 @@ import android.widget.EditText;
 public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	protected static final String TAG = "MonitoringActivity";
 	
-//	String serverUri = "tcp://messaging.quickstart.internetofthings.ibmcloud.com";
-	String serverUri = "tcp://dev.rabbitmq.com";
+	String serverUri = "tcp://messaging.quickstart.internetofthings.ibmcloud.com";
 	String clientId = "quickstart:fbb80f053444";
-//	MemoryPersistence persistence = new MemoryPersistence();
-//	String topic = "iot-1/d/fbb80f053444/evt/iotsensor/json";
-	String topic = "test/helloworld";
+	MemoryPersistence persistence = new MemoryPersistence();
+	String topic = "iot-1/d/fbb80f053444/evt/iotsensor/json";
 	MqttAndroidClient androidClient;
 	
-
+	
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		Log.d(TAG, "onCreate");
@@ -53,9 +51,11 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	    iBeaconManager.bind(this);
 	    try {
 	    	MqttConnectOptions conOpt = new MqttConnectOptions();
-	    	conOpt.setKeepAliveInterval(3000);
+	    	conOpt.setKeepAliveInterval(240000);
 	    	Context context = this;
-	    	androidClient = new MqttAndroidClient(context, serverUri, clientId);
+	    	
+	    	androidClient = new MqttAndroidClient(context, serverUri, clientId, persistence);	
+//	    	androidClient.setTraceEnabled(true);
 //			conOpt.setWill(client.getTopic(topic),"Crash".getBytes(),1,true);
 	    	androidClient.connect(conOpt);
 	    	Log.v("onCreate", "We might have logged on with the Mqtt client!");
@@ -125,6 +125,7 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
     		if (region.getMajor()==null || region.getMinor()==null || region.getProximityUuid()==null)
     		{}
     		else{
+    		
 				//get stuff
 				String myMajor = region.getMajor().toString();
 				String myMinor = region.getMinor().toString();
@@ -133,11 +134,16 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 				//connect
 				//parse message
 				Log.v("sendSignal","Created raw message: " + rawMessage);
-				MqttMessage message = new MqttMessage();
+				MqttMessage message = new MqttMessage();	
 				message.setQos(0);
 				message.setRetained(false);
 				message.setPayload(rawMessage.getBytes());
 				Log.v("sendSignal","Attempting to publish message to broker");
+				if(!androidClient.isConnected()) {
+    				MqttConnectOptions conOpt = new MqttConnectOptions();
+    		    	conOpt.setKeepAliveInterval(240000);
+    		    	androidClient.connect(conOpt);
+    			}
 				androidClient.publish(topic, message);
 				Log.v("sendSignal","Message (hopefully) published to broker");
     		} 
@@ -157,7 +163,10 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
         super.onDestroy();
         iBeaconManager.unBind(this);
         try {
-        	androidClient.disconnect();
+        	if(androidClient != null && androidClient.isConnected()) {
+	        	androidClient.disconnect();
+	        	androidClient.close();
+        	}
 		} catch (MqttException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
@@ -166,12 +175,29 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
     @Override 
     protected void onPause() {
     	super.onPause();
-    	if (iBeaconManager.isBound(this)) iBeaconManager.setBackgroundMode(this, true);    		
+    	if (iBeaconManager.isBound(this)) iBeaconManager.setBackgroundMode(this, true);    	
+    	try {
+    		if(androidClient != null && androidClient.isConnected())
+    			androidClient.disconnect();
+		} catch (MqttException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
     }
     @Override 
     protected void onResume() {
     	super.onResume();
-    	if (iBeaconManager.isBound(this)) iBeaconManager.setBackgroundMode(this, false);    		
+    	if (iBeaconManager.isBound(this)) iBeaconManager.setBackgroundMode(this, false);
+    	try {
+    		MqttConnectOptions conOpt = new MqttConnectOptions();
+	    	conOpt.setKeepAliveInterval(240000);
+	    	if(androidClient != null)
+	    		androidClient.connect();
+		} catch (MqttException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}    	
+    	
     }    
     
     private void logToDisplay(final String line) {
