@@ -1,7 +1,12 @@
 package com.radiusnetworks.ibeaconreference;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
 import org.eclipse.paho.android.service.MqttAndroidClient;
-import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
@@ -9,13 +14,17 @@ import org.eclipse.paho.client.mqttv3.MqttSecurityException;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 //import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 
+import com.radiusnetworks.ibeacon.IBeacon;
 //import com.jessefarebro.mqtt.MqttService;
 import com.radiusnetworks.ibeacon.IBeaconConsumer;
 import com.radiusnetworks.ibeacon.IBeaconManager;
 import com.radiusnetworks.ibeacon.MonitorNotifier;
+import com.radiusnetworks.ibeacon.RangeNotifier;
 import com.radiusnetworks.ibeacon.Region;
 //import com.radiusnetworks.ibeacon.TimedBeaconSimulator;
 
+import android.net.wifi.WifiInfo;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.app.Activity;
@@ -35,30 +44,60 @@ import android.widget.EditText;
 public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 	protected static final String TAG = "MonitoringActivity";
 	
-	String serverUri = "tcp://messaging.quickstart.internetofthings.ibmcloud.com";
+	//added things
+	//MQTT stuff
+	//String serverUri = "tcp://messaging.quickstart.internetofthings.ibmcloud.com:1883";
+	String serverUri = "tcp://broker.mqtt-dashboard.com:1883";
 	String clientId = "quickstart:fbb80f053444";
 	MemoryPersistence persistence = new MemoryPersistence();
 	String topic = "iot-1/d/fbb80f053444/evt/iotsensor/json";
-	MqttAndroidClient androidClient;
 	
+	//bookkeeping and target stuff
+	MqttAndroidClient androidClient;
+	List<IBeacon> alertedBeacons = new ArrayList<IBeacon>(); //beacons that have at least once been near or immediate; these will not cause a new alert
+	List<IBeacon> beaconsInRange = new ArrayList<IBeacon>(); //beacons in range
+	String targetUuid = "e2c56db5-dffb-48d2-b060-d0f5a71096e0";
+	int targetMajor = 5;
+	int targetMinor = 5;
+	String targetName = "iPhoneBeacon";
+	String macAddress;
+	double MAX_RELEVANT_DISTANCE = 30; //mostly placeholder, but still nice
+	
+    static class RangeComparator implements Comparator<IBeacon>{
+    	@Override
+    	public int compare(IBeacon b1, IBeacon b2){
+    		double r1 = b1.getAccuracy();
+    		double r2 = b2.getAccuracy();
+    		if (r1 == r2)
+    			return 0;
+    		else if (r1>r2)
+    			return 1;
+    		else
+    			return -1;
+    	}
+    }
 	
 	@Override
 	protected void onCreate(Bundle savedInstanceState) {
 		Log.d(TAG, "onCreate");
 		super.onCreate(savedInstanceState);
-		setContentView(R.layout.activity_monitoring);
+		setContentView(R.layout.activity_monitoring); //sets up layout as given in activity_monitoring.xml
 		verifyBluetooth();
 	    iBeaconManager.bind(this);
 	    try {
+	    	//try to connect
 	    	MqttConnectOptions conOpt = new MqttConnectOptions();
 	    	conOpt.setKeepAliveInterval(240000);
 	    	Context context = this;
-	    	
 	    	androidClient = new MqttAndroidClient(context, serverUri, clientId, persistence);	
 //	    	androidClient.setTraceEnabled(true);
 //			conOpt.setWill(client.getTopic(topic),"Crash".getBytes(),1,true);
-	    	androidClient.connect(conOpt);
-	    	Log.v("onCreate", "We might have logged on with the Mqtt client!");
+	    	androidClient.connect(conOpt); //causes error
+	    	Log.v("onCreate", "We might have logged on with the Mqtt client!");	   
+	    	//make sure we can get the macAddress; this must be done onCreate
+	    	WifiManager manager = (WifiManager) getSystemService(Context.WIFI_SERVICE);
+	    	WifiInfo info = manager.getConnectionInfo();
+	    	macAddress = info.getMacAddress();
 		} catch (MqttException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
@@ -69,13 +108,18 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 		//((TimedBeaconSimulator) IBeaconManager.getBeaconSimulator()).createTimedSimulatedBeacons();
 	}
 	
+//	public void onResetClicked(View view){ //implement this into layout
+//		alertedBeacons = new ArrayList<IBeacon>();
+//		beaconsInRange = new ArrayList<IBeacon>();
+//	}
+	
 	public void onRangingClicked(View view) {
 		Intent myIntent = new Intent(this, RangingActivity.class);
 		this.startActivity(myIntent);
 	}
 	public void onBackgroundClicked(View view) {
-		Intent myIntent = new Intent(this, BackgroundActivity.class);
-		this.startActivity(myIntent);
+		Intent myIntent = new Intent(this, MonitoringService.class);
+		this.startService(myIntent);
 	}
 
 	private void verifyBluetooth() {
@@ -118,26 +162,63 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
 
     private IBeaconManager iBeaconManager = IBeaconManager.getInstanceForApplication(this);
     
-    public void sendSignal(Region region){
+
+    
+    public void sortBeaconsAscendingByRange(List<IBeacon> beacons){
+    	if (beacons.size()>1){
+    		//sort by ascending range
+    		Collections.sort(beaconsInRange, Collections.reverseOrder(new MonitoringActivity.RangeComparator())); //looks Greek but should work
+    	}
+    }
+    
+    public Boolean addBeaconToList(List<IBeacon> beaconList, IBeacon beacon) //add beacon to beacon list if it is not already in list; return TRUE if beacon added
+    {
+    	Boolean insert = true;
+    	for (IBeacon kevinBeacon : beaconList){
+    		if (kevinBeacon.equals(beacon))
+			{
+    			insert = false;
+    			break;
+			}
+    	}
+    	if (insert)
+    	{
+    		beaconList.add(beacon);
+    	}
+    	return insert;
+    }
+    
+    ////////////////////////////////
+    //////SEND UPON DETECTION///////
+    ////////////////////////////////
+    
+    public void sendNearestBeacon(Collection<IBeacon> listOfBeacons){
+    	List<IBeacon> iBeaconList = new ArrayList<IBeacon>(listOfBeacons);	//stupid hack because I'm stupid
+    	sortBeaconsAscendingByRange(iBeaconList); //sort
+    	sendBeacon2Platform(iBeaconList.get(0));
+    }
+    
+    public void sendSignalDetection(Region region, double range){
     	try 
     	{
     		//first things first
     		if (region.getMajor()==null || region.getMinor()==null || region.getProximityUuid()==null)
     		{}
     		else{
-    		
 				//get stuff
 				String myMajor = region.getMajor().toString();
 				String myMinor = region.getMinor().toString();
 				String myUuid = region.getProximityUuid();
-				String rawMessage = "Discovered iBeacon: " + myUuid + "#" + myMajor + "#" + myMinor;
-				//connect
+				
+				//make message in JSON format for easier parsing in platform
+				String payload = "{ \"iBeaconUuid\": " + myUuid + ",\n\"iBeaconMajor\": " + myMajor + ",\n\"iBeaconMinor\": "
+						+ myMinor + ",\n\"MAC\": " + macAddress + ",\n\"Range\": " + String.format("%.2f",range) + "}";
 				//parse message
-				Log.v("sendSignal","Created raw message: " + rawMessage);
+				//Log.v("sendSignal","Created raw message: " + JsonString);
 				MqttMessage message = new MqttMessage();	
 				message.setQos(0);
-				message.setRetained(false);
-				message.setPayload(rawMessage.getBytes());
+				message.setRetained(true);
+				message.setPayload(payload.getBytes());
 				Log.v("sendSignal","Attempting to publish message to broker");
 				if(!androidClient.isConnected()) {
     				MqttConnectOptions conOpt = new MqttConnectOptions();
@@ -157,16 +238,61 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
     		e.printStackTrace();
 		}
 	}
+    
+    public void sendBeacon2Platform(IBeacon bacon){ //cutting edge awesome send function
+    	if ((Integer)bacon.getMajor()==null || (Integer)bacon.getMinor()==null || bacon.getProximityUuid()==null)
+		{
+    		//put something here...
+    		Log.v("sendSignal","Picked up an unhandled null/wildcard beacon identity.");
+		}
+		else{
+			try 
+	    	{
+				//get stuff
+				String myMajor = ((Integer)bacon.getMajor()).toString();
+				String myMinor = ((Integer)bacon.getMinor()).toString();
+				String myUuid = bacon.getProximityUuid();
+				//make message in JSON format for easier parsing in platform
+				String payload = "{ \"iBeaconUuid: \"" + myUuid + ",\n\"iBeaconMajor: \"" + myMajor + ",\n\"iBeaconMinor: \""
+						+ myMinor + ",\n\"MAC: \"" + macAddress + ",\n\"Range: \"" + String.format("%.2f",bacon.getAccuracy()) + "}";
+				//parse and send message
+				MqttMessage message = new MqttMessage();	
+				message.setQos(0);
+				message.setRetained(false);
+				message.setPayload(payload.getBytes());
+				Log.v("sendSignal","Attempting to publish message to broker");
+				if(!androidClient.isConnected()) {
+					MqttConnectOptions conOpt = new MqttConnectOptions();
+			    	conOpt.setKeepAliveInterval(240000);
+			    	androidClient.connect(conOpt);
+				}
+				androidClient.publish(topic, message);
+				Log.v("sendSignal","Message (hopefully) published to broker");
+				logToDisplay("Message sent: Major " + myMajor + ", Minor: " + myMinor);
+	    	}
+	    	catch (MqttSecurityException e) {
+			// TODO Auto-generated catch block
+	    		e.printStackTrace();
+	    	} 
+	    	catch (MqttException e) {
+			// TODO Auto-generated catch block
+	    		e.printStackTrace();
+	    	}
+		}
+    }
+
 
     @Override 
     protected void onDestroy() {
         super.onDestroy();
         iBeaconManager.unBind(this);
+        alertedBeacons = new ArrayList<IBeacon>();
         try {
         	if(androidClient != null && androidClient.isConnected()) {
 	        	androidClient.disconnect();
 	        	androidClient.close();
         	}
+        	
 		} catch (MqttException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
@@ -209,38 +335,84 @@ public class MonitoringActivity extends Activity implements IBeaconConsumer  {
     	    }
     	});
     }
+    
+    public void sendAllNearOrImmediate(Collection<IBeacon> iBeacons, Region region, Boolean onlyOnce){
+    	if (iBeacons.size() > 0)
+		{
+			for(IBeacon kevinBeacon : iBeacons){
+				//fetch proximity information
+				int proxy = kevinBeacon.getProximity();
+				if((proxy==1 || proxy==2) && !(alertedBeacons.contains(kevinBeacon))) //near or immediate, and not in already-"alerted" beacons
+					{
+					//alert platform
+					logToDisplay("NEAR iBeacon detected, sending MQTT...");
+					Log.d("NearAdvert", "NEAR iBeacon detected, sending MQTT....");
+					sendBeacon2Platform(kevinBeacon);
+					logToDisplay("Message sent!");
+					Log.d("NearAdvert","Near/Immediate message sent!");
+					if (onlyOnce){
+						alertedBeacons.add(kevinBeacon);
+					}
+					try {
+						iBeaconManager.stopRangingBeaconsInRegion(region);
+					} catch (RemoteException e) {
+						// TODO Auto-generated catch block
+						e.printStackTrace();
+					}
+					}
+			}
+		}
+    }
+    
     @Override
     public void onIBeaconServiceConnect() {
         iBeaconManager.setMonitorNotifier(new MonitorNotifier() {
-        @Override
-        public void didEnterRegion(Region region) {
-          logToDisplay("I just saw an iBeacon named "+ region.getUniqueId() +" for the first time!" );
-          //my added stuff
-          logToDisplay("Sending MQTT message...");
-          sendSignal(region);
-          logToDisplay("MQTT message sent!");
-        }
-
-        @Override
-        public void didExitRegion(Region region) {
-        	logToDisplay("I no longer see an iBeacon named "+ region.getUniqueId());
-        }
-
-        @Override
-        public void didDetermineStateForRegion(int state, Region region) {
-        	logToDisplay("I have just switched from seeing/not seeing iBeacons: "+state);     
-        }
-
-
+	        @Override
+	        public void didEnterRegion(Region region) 
+	        {
+	        	logToDisplay("Discovered iBeacon region: "+ region.getUniqueId());
+	        	iBeaconManager.setRangeNotifier(new RangeNotifier() 
+				{
+					@Override
+					public void didRangeBeaconsInRegion(Collection<IBeacon> iBeacons,
+							Region region)
+						{
+							////choose one! 
+							//sendAllNearOrImmediate(iBeacons, region, true); //last argument is whether to send MQTT only once for each thing
+							if (iBeacons.size()>0){
+							sendNearestBeacon(iBeacons);}
+						}
+				});
+	        	try 
+				{	
+	        		iBeaconManager.startRangingBeaconsInRegion(region);
+				} 
+				catch (RemoteException e) {}
+	        }
+	
+	        @Override
+	        public void didExitRegion(Region region) {
+	        	logToDisplay("Lost iBeacon region: "+ region.getUniqueId());
+	        	//stop ranging
+	        	try 
+				{
+					iBeaconManager.stopRangingBeaconsInRegion(region);
+				} 
+				catch (RemoteException e) {}
+	        }
+	
+	        @Override
+	        public void didDetermineStateForRegion(int state, Region region) {
+	        	logToDisplay("I have just switched from seeing/not seeing iBeacons: "+state);     
+	        	//add stopRanging or startRanging
+	        }
+	        
         });
 
         try {
-        	iBeaconManager.startMonitoringBeaconsInRegion(new Region("Utgang", "e2c56db5-dffb-48d2-b060-d0f5a71096e0", 3, 1));
-        	//Sample Simulated iBeacons
-        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test1","DF7E1C79-43E9-44FF-886F-1D1F7DA6997A".toLowerCase(), 1, 1));
-        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test2","DF7E1C79-43E9-44FF-886F-1D1F7DA6997B".toLowerCase(), 1, 2));
-        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test3","DF7E1C79-43E9-44FF-886F-1D1F7DA6997C".toLowerCase(), 1, 3));
-        	//iBeaconManager.startMonitoringBeaconsInRegion(new Region("test4","DF7E1C79-43E9-44FF-886F-1D1F7DA6997D".toLowerCase(), 1, 4));
+//        	Region targetRegion = new Region(targetName, targetUuid, targetMajor, targetMinor);
+        	Region targetRegion = new Region(targetName, targetUuid, null, null); //null is wildcard
+        	iBeaconManager.startMonitoringBeaconsInRegion(targetRegion);
         } catch (RemoteException e) {   }
     }
 	
